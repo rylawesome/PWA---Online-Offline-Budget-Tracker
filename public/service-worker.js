@@ -1,51 +1,69 @@
-let db;
+const { response } = require("express");
 
-const request = indexedDB.open("budget", 1);
+const FILES_TO_CACHE = [
+    "/",
+    "/db.js",
+    "/index.js",
+    "/manifest.webmanifest",
+    "/styles.css",
+    "/icons/icon-192x192.png",
+    "/icons/icon-512x512.png"
+];
 
-request.onupgradeneeded = function(event) {
-    //store object 'pending'
-    const db = event.target.result;
-    db.createObjectStore("pending", {autoIncrement: true});
-};
+const CACHE_NAME = "static-cache-v22";
+const DATA_CACHE_NAME = "data-cahce=v33";
 
-request.onsuccess = function(event) {
-    db = event.target.result
+self.addEventListener("install", function(event) {
+    event.waitUntil(
+        caches.open(CACHE_NAME).then(cache => {
+            return cache.addAll(FILES_TO_CACHE);
+        })
+    );
 
-    //Check status of app
-    if (navigator.onLine) {
-        checkDatabase();
+    self.skipWaiting();
+});
+
+self.addEventListener("activate", function(event) {
+    event.waitUntil(
+        caches.keys().then(keyList => {
+            return Promise.all(
+                keyList.map(key => {
+                    if (key !== CACHE_NAME && key !== DATA_CACHE_NAME) {
+                        return caches.delete(key);
+                    }
+                })
+            );
+        })
+    );
+
+    self.clients.claim();
+});
+
+self.addEventListener("fetch", function(event) {
+    if (event.request.url.includes("/api/")) {
+        event.respondWith(
+            caches.open(DATA_CACHE_NAME).then(cache => {
+                return fetch(event.request).then(reponse => {
+                    if (response.status === 200) {
+                        cache.put(event.request.url, response.clone());
+                    }
+                    return response;
+                }).catch(err => {
+                    return cache.match(event.request);
+                });
+            })
+        );
+        return;
     }
-};
-
-//This function will save a transaction while offline to the pending DB created above
-function saveToPending(record) {
-    const transaction = db.transaction.objectStore(["pending"], "readwrite");
-    const store = transaction.objectStore("pending");
-    store.add(record);
-}
-
-function checkDB() {
-    const transaction = db.transaction(["pending"], "readwrite");
-    const store = transaction.objectStore("pending");
-    const grabAll = store.getAll();
-
-    grabAll.onsuccess = function() {
-        if (grabAll.result.length > 0) {
-            fetch("/api/transaction/bulk", {
-                method: "POST",
-                body: JSON.stringify(grabAll.result),
-                headers: {
-                    Accept: "application/json, text/plain, */*",
-                    "Content-Type": "application/json"
+    event.respondWith(
+        fetch(event.request).catch(function() {
+            return caches.match(event.request).then(function(response) {
+                if (response) {
+                    return response;
+                } else if (event.request.headers.get("accept").includes("text/html")) {
+                    return caches.match("/");
                 }
-            }).then(response => response.json()).then(() => {
-                const transaction = db.transaction(["pending"], "readwrite");
-                const store = transaction.objectStore("pending");
-                //clear when finished
-                store.clear();
             });
-        }
-    };
-}
-
-window.addEventListener("online", checkDatabase);
+        })
+    );
+});
